@@ -1,7 +1,13 @@
 #   Imports
+import torch
 import numpy as np
+from tqdm import tqdm
 import torch.nn as nn
 import torch.optim as optim
+import matplotlib.pyplot as plt
+import torchvision.transforms as T
+from torchvision.datasets import MNIST
+from torch.utils.data import DataLoader
 
 #   Hyperparameters
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -10,6 +16,10 @@ batchSize = 128
 neurons = 512
 outShape = (-1, 28, 28)
 numEpochs = 10
+
+#   Data
+trainData = MNIST('../Desktop/mnist/', True, T.ToTensor(), download = True)
+trainLoader = DataLoader(trainData, batchSize, True, drop_last = True)
 
 #   Helper Funcs
 def fcLayer(inNeurons: int, outNeurons: int, leak: float = 0.1):
@@ -64,9 +74,80 @@ G.to(device)
 D.to(device)
 
 lossFunc = nn.BCEWithLogitsLoss()
-
 realLabel = 1
 fakeLabel = 0
 
-optimizerD = optim.AdamW(D.parameters(), lr = 0.0001, betas = (0.0, 0.9))
+optimizerD = optim.AdamW(D.parameters(), lr = 0.0001, betas = (0.0, 0.9)) 
 optimizerG = optim.AdamW(G.parameters(), lr = 0.0001, betas = (0.0, 0.9))
+
+def trainingLoop():
+
+    GLosses = []
+    DLosses = []
+
+    for _ in tqdm(range(numEpochs)):
+        for data, _ in tqdm(trainLoader, leave = False):
+
+            dataReal = data.to(device)
+
+            yReal = torch.full((batchSize, 1), realLabel, dtype = torch.float32, 
+                               device = device) 
+            yFake = torch.full((batchSize, 1), fakeLabel, dtype = torch.float32, 
+                               device = device) 
+
+            #   l(D(x_real), y_real)
+            D.zero_grad()
+            errDReal = lossFunc(D(dataReal), yReal)
+            errDReal.backward()
+            
+            #   Random vector z is a noise
+            z = torch.randn(batchSize, latentZDim, device = device)
+
+            #   l(D(G(z)), y_fake)
+            fake = G(z)
+            errDFake = lossFunc(D(fake.detach()), yFake)
+            errDFake.backward()
+
+            errD = errDReal + errDFake
+
+            optimizerD.step()
+
+            #   l(D(G(z)), y_real)
+            G.zero_grad()
+            errG = lossFunc(D(fake), yReal)
+            errG.backward()
+
+            optimizerG.step()
+            GLosses.append(errG.item())
+            DLosses.append(errD.item())
+
+trainingLoop()
+
+#   Inspecting the results (test)
+with torch.no_grad():
+    noise = torch.randn(batchSize, latentZDim, device = device)
+    fakeDigits = G(noise)
+    scores = torch.sigmoid(D(fakeDigits))
+    fakeDigits = fakeDigits.cpu()
+    scores = scores.cpu().numpy().flatten()
+
+#   Plots
+def plotGenImgs(fakeDigits, scores = None):
+    batchSize = fakeDigits.size(0)
+    #   Here we assume we're working with B & W imgs
+    fakeDigits = fakeDigits.reshape(-1, fakeDigits.size(-1), fakeDigits.size(-1))
+    iMax = int(round(np.sqrt(batchSize)))
+    jMax = int(round(np.floor(batchSize / float(iMax))))
+    _, axarr = plt.subplots(iMax, jMax, figsize = (10, 10))
+    for i in range(iMax):
+        for j in range(jMax):
+            idx = i * jMax + j
+            axarr[i, j].imshow(fakeDigits[idx,:].numpy(), cmap = 'gray',
+                               vmin = 0, vmax = 1)
+            axarr[i, j].set_axis_off()
+            if scores is not None:
+                axarr[i, j].text(0.0, 0.5, str(round(scores[idx], 2)), dict(size = 20, 
+                                color = 'red'))
+    plt.show()
+
+plotGenImgs(fakeDigits, scores)
