@@ -1,6 +1,7 @@
 #   Imports
 import torch
 import numpy as np
+import seaborn as sns
 from tqdm import tqdm
 import torch.nn as nn
 import torch.optim as optim
@@ -121,7 +122,7 @@ def trainingLoop():
             GLosses.append(errG.item())
             DLosses.append(errD.item())
 
-trainingLoop()
+# trainingLoop()
 
 #   Inspecting the results (test)
 with torch.no_grad():
@@ -150,4 +151,22 @@ def plotGenImgs(fakeDigits, scores = None):
                                 color = 'red'))
     plt.show()
 
-plotGenImgs(fakeDigits, scores)
+# plotGenImgs(fakeDigits, scores)
+
+#   Trying to solve Mode Collapse
+gausGrid = (3, 3)
+samplesPer = 1000
+
+X = []
+for i in range(gausGrid[0]):
+    for j in range(gausGrid[1]):
+        z = np.random.normal(0, 0.05, size = (samplesPer, 2))
+        #   Shifts samples to have specific x & y axis
+        z[:, 0] += i/1.0 - (gausGrid[0] - 1) / 2.0
+        z[:, 1] += j/1.0 - (gausGrid[1] - 1) / 2.0
+        X.append(z)
+X = np.vstack(X)
+
+plt.figure(figsize = (10, 10))
+sns.kdeplot(x = X[:, 0], y = X[:, 1], shade = True, fill = True, thresh = -0.001)
+plt.show()
