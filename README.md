@@ -1,4 +1,5 @@
 #   GAN
+fuuuuuck
 
 This is my first implementation of a generative adversarial network, these networks 
 don't learn directly from the Dataset. Actually there are two subnetworks in GAN: 
