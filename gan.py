@@ -170,3 +170,30 @@ X = np.vstack(X)
 plt.figure(figsize = (10, 10))
 sns.kdeplot(x = X[:, 0], y = X[:, 1], shade = True, fill = True, thresh = -0.001)
 plt.show()
+
+def trainWGAN(D, G, loader, latentZDim, epochs = 20, device = 'cpu'):
+    GLosses = []
+    DLosses = []
+    G.to(device)
+    D.to(device)
+
+    optimizerD = optim.AdamW(D.parameters(), lr = 0.0001, betas = (0.0, 0.9))
+    optimizerG = optim.AdamW(G.parameters(), lr = 0.0001, betas = (0.0, 0.9))
+
+    for epoch in tqdm(range(epochs)):
+        for data in tqdm(loader, leave = False):
+            if isinstance(data, tuple) or len(data) == 2:
+                data, classLabel = data
+                classLabel = classLabel.to(device)
+            elif isinstance(data, tuple) or len(data) == 1:
+                data = data[0]
+            batchSize = data.size(0)
+            D.zero_grad()
+            G.zero_grad()
+            real = data.to(device)
+
+            DSuccess = D(real)
+            noise = torch.randn(batchSize, latentZDim, device = device)
+            fake = G(noise)
+            Dfailure = D(fake)
+
