@@ -228,43 +228,43 @@ def trainWGAN(D, G, loader, latentZDim, epochs = 20, Lambda = 10, device = 'cpu'
             GLosses.append(errG.item())
     return DLosses, GLosses
 
-# G, D = simpleGAN(latentZDim, 512, (-1, 2))
-# trainWGAN(D, G, toyLoader, latentZDim, epochs = 20, device = device)
-# G, D = G.eval(), D.eval()
-#
-# with torch.no_grad():
-#     noise = torch.randn(X.shape[0], latentZDim, device = device)
-#     fakeSamplesW = G(noise).cpu().numpy()
-# plt.figure(figsize = (10, 10))
-# ax = sns.kdeplot(x = fakeSamplesW[:, 0], y = fakeSamplesW[:, 1], shade = True,
-#                  thresh = -0.001)
-# plt.xlim(-1.5, 1.5)
-# plt.ylim(-1.5, 1.5)
-# plt.show()
+G, D = simpleGAN(latentZDim, 512, (-1, 2))
+trainWGAN(D, G, toyLoader, latentZDim, epochs = 20, device = device)
+G, D = G.eval(), D.eval()
+
+with torch.no_grad():
+    noise = torch.randn(X.shape[0], latentZDim, device = device)
+    fakeSamplesW = G(noise).cpu().numpy()
+plt.figure(figsize = (10, 10))
+ax = sns.kdeplot(x = fakeSamplesW[:, 0], y = fakeSamplesW[:, 1], shade = True,
+                 thresh = -0.001)
+plt.xlim(-1.5, 1.5)
+plt.ylim(-1.5, 1.5)
+plt.show()
 
 #   Back to MNIST
 latentZDim = 128
 outShape = (-1, 1, 28, 28)
-# G, D = simpleGAN(latentZDim, neurons, outShape, sigmoidG = True)
-# DLosses, GLosses = trainWGAN(D, G, trainLoader, latentZDim, epochs = 40, device = device)
-# D = D.eval()
-# G = G.eval()
-#
-# with torch.no_grad():
-#     noise = torch.randn(batchSize, latentZDim, device = device)
-#     fakeDigits = G(noise)
-#     scores = D(fakeDigits)
-#     fakeDigits = fakeDigits.cpu()
-#     scores = scores.cpu().numpy().flatten()
-# plotGenImgs(fakeDigits)
-# plt.figure(figsize = (10, 5))
-# plt.title('Generator and Discrimantor Loss during Training')
-# plt.plot(np.convolve(GLosses, np.ones((100,)) / 100, mode = 'valid'), label = 'G')
-# plt.plot(np.convolve(GLosses, np.ones((100,)) / 100, mode = 'valid'), label = 'D')
-# plt.xlabel('iterations')
-# plt.xlabel('Loss')
-# plt.legend()
-# plt.show()
+G, D = simpleGAN(latentZDim, neurons, outShape, sigmoidG = True)
+DLosses, GLosses = trainWGAN(D, G, trainLoader, latentZDim, epochs = 40, device = device)
+D = D.eval()
+G = G.eval()
+
+with torch.no_grad():
+    noise = torch.randn(batchSize, latentZDim, device = device)
+    fakeDigits = G(noise)
+    scores = D(fakeDigits)
+    fakeDigits = fakeDigits.cpu()
+    scores = scores.cpu().numpy().flatten()
+plotGenImgs(fakeDigits)
+plt.figure(figsize = (10, 5))
+plt.title('Generator and Discrimantor Loss during Training')
+plt.plot(np.convolve(GLosses, np.ones((100,)) / 100, mode = 'valid'), label = 'G')
+plt.plot(np.convolve(GLosses, np.ones((100,)) / 100, mode = 'valid'), label = 'D')
+plt.xlabel('iterations')
+plt.xlabel('Loss')
+plt.legend()
+plt.show()
 
 # ----------------------------------------------------------------------------------------
 
@@ -345,3 +345,112 @@ plt.xlabel('iterations')
 plt.xlabel('Loss')
 plt.legend()
 plt.show()
+
+# ----------------------------------------------------------------------------------------
+
+#   Conditional GANs
+class ConditionalWrapper(nn.Module):
+    def __init__(self, inputShape, neurons, classes, mainNetwork, leak = 0.2):
+        '''inputShape: the shape that the latent variable z should take
+        neurons: neurons to use in hidden layer
+        classes: number of classes in labels y
+        mainNetwork: either the generator G or discrimantor D
+        '''
+        super().__init__()
+        self.inputShape = inputShape
+        self.classes = classes
+        inputSize = abs(np.prod(inputShape))
+
+        self.labelEmbedding = nn.Embedding(classes, inputSize) # Converts labels to vectors
+        self.combiner = nn.Sequential(
+            nn.Flatten(),
+            fcLayer(inputSize ** 2, inputSize, leak),
+            nn.Linear(inputSize, inputSize),
+            nn.LeakyReLU(leak),
+            View(inputShape),
+            nn.LayerNorm(inputShape[1:]),
+        )
+        self.net = mainNetwork
+
+    def forward(self, x, condition = None):
+        if condition is None:
+            # No label -> pick one aat random
+            condition = torch.randint(0, self.classes, size = (x.size(0),),
+                                      device = x.get_device())
+        embd = self.labelEmbedding(condition)
+        x = x.view(self.inputShape)
+        xComb = torch.cat([x, embd], dim = 1)
+
+        return self.net(self.combiner(xComb)) # So => you give the condition to both models G & D
+
+latentD = 128
+outShape = (-1, 1, 28, 28)
+inShape = (-1, latentD)
+classes = 10
+G, D = simpleGAN(latentD, neurons, outShape, sigmoidG = True)
+
+G = ConditionalWrapper(inShape, neurons, classes, G)
+D = ConditionalWrapper(inShape, neurons, classes, D)
+
+def trainCWGAN(D, G, loader, latentZDim, epochs = 20, Lambda = 10, device = 'cpu'):
+    GLosses = []
+    DLosses = []
+    G.to(device)
+    D.to(device)
+
+    optimizerD = optim.AdamW(D.parameters(), lr = 0.0001, betas = (0.0, 0.9))
+    optimizerG = optim.AdamW(G.parameters(), lr = 0.0001, betas = (0.0, 0.9))
+
+    for _ in tqdm(range(epochs)):
+        for data in tqdm(loader, leave = False):
+            data, classLabel = data
+            classLabel = classLabel.to(device)
+            batchSize = data.size(0)
+            D.zero_grad()
+            G.zero_grad()
+            real = data.to(device)
+
+            DSuccess = D(real, classLabel)
+            noise = torch.randn(batchSize, latentZDim, device = device)
+            fake = G(noise, classLabel) # a fake batch
+            DFailure = D(fake, classLabel)
+
+            epsShape = [batchSize] + [1]*(len(data.shape) - 1)
+            eps = torch.rand(epsShape, device = device)
+            mixed = eps * real + (1 - eps) * fake
+            output = D(mixed, classLabel)
+
+            grad = torch.autograd.grad(outputs = output, inputs = mixed,
+                        grad_outputs = torch.ones_like(output), create_graph = True,
+                        retain_graph = True, only_inputs = True, allow_unused = True)[0]
+
+            DGradPenalty = ((grad.norm(2, dim = 1) - 1) ** 2)
+            errD = (DFailure - DSuccess).mean() + DGradPenalty.mean() * Lambda
+            errD.backward()
+            optimizerD.step()
+
+            D.zero_grad()
+            G.zero_grad()
+
+            noise = torch.randn(batchSize, latentZDim, device = device)
+            output = -D(G(noise, classLabel), classLabel)
+            errG = output.mean()
+            errG.backward()
+            optimizerG.step()
+            
+            DLosses.append(errD.item())
+            GLosses.append(errG.item())
+    return DLosses, GLosses
+
+DLosses, GLosses = trainCWGAN(D, G, trainLoader, latentD, epochs = 20, device = device)
+G, D = G.eval(), D.eval()
+
+with torch.no_grad():
+    noise = torch.randn(10, latentZDim, device = device).repeat((1, 10)).view(-1,
+                                                                              latentZDim)
+    labels = torch.fmod(torch.arange(0, noise.size(0), device = device), classes)
+    fakeDigits = G(noise, labels)
+    scores = D(fakeDigits, labels)
+    fakeDigits = fakeDigits.cpu()
+    scores = scores.cpu().numpy().flatten()
+plotGenImgs(fakeDigits)
