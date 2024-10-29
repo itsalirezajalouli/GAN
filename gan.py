@@ -167,11 +167,15 @@ for i in range(gausGrid[0]):
         X.append(z)
 X = np.vstack(X)
 
-plt.figure(figsize = (10, 10))
-sns.kdeplot(x = X[:, 0], y = X[:, 1], shade = True, fill = True, thresh = -0.001)
-plt.show()
+# plt.figure(figsize = (10, 10))
+# sns.kdeplot(x = X[:, 0], y = X[:, 1], shade = True, fill = True, thresh = -0.001)
+# plt.show()
 
-def trainWGAN(D, G, loader, latentZDim, epochs = 20, device = 'cpu'):
+toyDataset = torch.utils.data.TensorDataset(torch.tensor(X, dtype = torch.float32))
+toyLoader = DataLoader(toyDataset, batch_size = batchSize, shuffle = True,
+                       drop_last = True)
+
+def trainWGAN(D, G, loader, latentZDim, epochs = 20, Lambda = 10, device = 'cpu'):
     GLosses = []
     DLosses = []
     G.to(device)
@@ -194,6 +198,142 @@ def trainWGAN(D, G, loader, latentZDim, epochs = 20, device = 'cpu'):
 
             DSuccess = D(real)
             noise = torch.randn(batchSize, latentZDim, device = device)
-            fake = G(noise)
-            Dfailure = D(fake)
+            fake = G(noise) # a fake batch
+            DFailure = D(fake)
 
+            epsShape = [batchSize] + [1]*(len(data.shape) - 1)
+            eps = torch.rand(epsShape, device = device)
+            mixed = eps * real + (1 - eps) * fake
+            output = D(mixed)
+
+            grad = torch.autograd.grad(outputs = output, inputs = mixed,
+                        grad_outputs = torch.ones_like(output), create_graph = True,
+                        retain_graph = True, only_inputs = True, allow_unused = True)[0]
+
+            DGradPenalty = ((grad.norm(2, dim = 1) - 1) ** 2)
+            errD = (DFailure - DSuccess).mean() + DGradPenalty.mean() * Lambda
+            errD.backward()
+            optimizerD.step()
+
+            D.zero_grad()
+            G.zero_grad()
+
+            noise = torch.randn(batchSize, latentZDim, device = device)
+            output = -D(G(noise))
+            errG = output.mean()
+            errG.backward()
+            optimizerG.step()
+            
+            DLosses.append(errD.item())
+            GLosses.append(errG.item())
+    return DLosses, GLosses
+
+# G, D = simpleGAN(latentZDim, 512, (-1, 2))
+# trainWGAN(D, G, toyLoader, latentZDim, epochs = 20, device = device)
+# G, D = G.eval(), D.eval()
+#
+# with torch.no_grad():
+#     noise = torch.randn(X.shape[0], latentZDim, device = device)
+#     fakeSamplesW = G(noise).cpu().numpy()
+# plt.figure(figsize = (10, 10))
+# ax = sns.kdeplot(x = fakeSamplesW[:, 0], y = fakeSamplesW[:, 1], shade = True,
+#                  thresh = -0.001)
+# plt.xlim(-1.5, 1.5)
+# plt.ylim(-1.5, 1.5)
+# plt.show()
+
+#   Back to MNIST
+latentZDim = 128
+outShape = (-1, 1, 28, 28)
+# G, D = simpleGAN(latentZDim, neurons, outShape, sigmoidG = True)
+# DLosses, GLosses = trainWGAN(D, G, trainLoader, latentZDim, epochs = 40, device = device)
+# D = D.eval()
+# G = G.eval()
+#
+# with torch.no_grad():
+#     noise = torch.randn(batchSize, latentZDim, device = device)
+#     fakeDigits = G(noise)
+#     scores = D(fakeDigits)
+#     fakeDigits = fakeDigits.cpu()
+#     scores = scores.cpu().numpy().flatten()
+# plotGenImgs(fakeDigits)
+# plt.figure(figsize = (10, 5))
+# plt.title('Generator and Discrimantor Loss during Training')
+# plt.plot(np.convolve(GLosses, np.ones((100,)) / 100, mode = 'valid'), label = 'G')
+# plt.plot(np.convolve(GLosses, np.ones((100,)) / 100, mode = 'valid'), label = 'D')
+# plt.xlabel('iterations')
+# plt.xlabel('Loss')
+# plt.legend()
+# plt.show()
+
+# ----------------------------------------------------------------------------------------
+
+#   Convolutional GANs
+startSize = 28 // 4
+latentChannels = 16
+latentDConv = latentChannels * (startSize ** 2)
+inShape = (-1, latentChannels, startSize, startSize) # (B, C', H', W')
+
+nFilters = 32
+kSize = 5
+kSizeT = 4
+leak = 0.2
+
+#   Helper Functions
+def cnnLayer(inChannels, outChannels, filterSize, whSize, leak =  0.2):
+    return nn.Sequential(
+        nn.Conv2d(inChannels, outChannels, filterSize, padding = filterSize // 2),
+        nn.LeakyReLU(leak),
+        nn.LayerNorm([outChannels, whSize, whSize])
+    )
+#   Transposed convolution to expand in size
+def tcnnLayer(inChannels, outChannels, whSize, leak =  0.2):
+    return nn.Sequential(
+        nn.ConvTranspose2d(inChannels, outChannels, kSizeT, padding = 1, 
+                           output_padding = 0, stride = 2),
+        nn.LeakyReLU(leak),
+        nn.LayerNorm([outChannels, whSize, whSize])
+    )
+
+G = nn.Sequential(
+    View(inShape), # Changing the latent vector z to desired img shape
+    cnnLayer(latentChannels, nFilters, kSize, 28 // 4, leak),
+    cnnLayer(nFilters, nFilters, kSize, 28 // 4, leak),
+    cnnLayer(nFilters, nFilters, kSize, 28 // 4, leak),
+    tcnnLayer(nFilters, nFilters // 2, 28 // 2, leak),
+    cnnLayer(nFilters // 2, nFilters // 2, kSize, 28 // 2, leak),
+    cnnLayer(nFilters // 2, nFilters // 2, kSize, 28 // 2, leak),
+    tcnnLayer(nFilters // 2, nFilters // 4, 28, leak),
+    cnnLayer(nFilters // 4, nFilters // 4, kSize, 28, leak),
+    cnnLayer(nFilters // 4, nFilters // 4, kSize, 28, leak),
+    nn.Conv2d(nFilters // 4, 1, kSize, padding = kSize // 2),
+    nn.Sigmoid(),
+)
+
+D = nn.Sequential(
+    cnnLayer(1, nFilters, kSize, 28, leak),
+    cnnLayer(nFilters, nFilters, kSize, 28, leak),
+    nn.AvgPool2d(2),
+    cnnLayer(nFilters, nFilters, kSize, 28 // 2, leak),
+    cnnLayer(nFilters, nFilters, kSize, 28 // 2, leak),
+    nn.AvgPool2d(2),
+    cnnLayer(nFilters, nFilters, 3, 28 // 4, leak),
+    cnnLayer(nFilters, nFilters, 3, 28 // 4, leak),
+    nn.AdaptiveAvgPool2d(4),
+    nn.Flatten(),
+    nn.Linear(nFilters*4**2, 256),
+    nn.LeakyReLU(leak),
+    nn.Linear(256, 1),
+)
+
+DLosses, GLosses = trainWGAN(D, G, trainLoader, latentDConv, epochs = 15, device = device)
+D = D.eval()
+G = G.eval()
+
+with torch.no_grad():
+    noise = torch.randn(batchSize, latentDConv, device = device)
+    fakeDigits = G(noise)
+    scores = D(fakeDigits)
+    fakeDigits = fakeDigits.cpu()
+    scores = scores.cpu().numpy().flatten()
+plotGenImgs(fakeDigits)
