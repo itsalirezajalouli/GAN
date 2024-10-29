@@ -329,7 +329,6 @@ D = nn.Sequential(
 DLosses, GLosses = trainWGAN(D, G, trainLoader, latentDConv, epochs = 15, device = device)
 D = D.eval()
 G = G.eval()
-
 with torch.no_grad():
     noise = torch.randn(batchSize, latentDConv, device = device)
     fakeDigits = G(noise)
@@ -337,3 +336,12 @@ with torch.no_grad():
     fakeDigits = fakeDigits.cpu()
     scores = scores.cpu().numpy().flatten()
 plotGenImgs(fakeDigits)
+
+plt.figure(figsize = (10, 5))
+plt.title('Conv-WGAN Generator and Discrimantor Loss during Training')
+plt.plot(np.convolve(GLosses, np.ones((100,)) / 100, mode = 'valid'), label = 'G')
+plt.plot(np.convolve(GLosses, np.ones((100,)) / 100, mode = 'valid'), label = 'D')
+plt.xlabel('iterations')
+plt.xlabel('Loss')
+plt.legend()
+plt.show()
